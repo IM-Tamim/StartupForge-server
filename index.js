@@ -277,9 +277,26 @@ app.patch("/api/users/profile", async (req, res) => {
 app.get("/api/applications", async (req, res) => {
   try {
     const query = {};
-    if (req.query.applicant_email) query.applicant_email = req.query.applicant_email;
-    if (req.query.opportunity_id)  query.opportunity_id  = req.query.opportunity_id;
-    if (req.query.founder_email)   query.founder_email   = req.query.founder_email;
+
+    if (req.query.applicant_email) {
+      query.applicant_email = req.query.applicant_email;
+    }
+
+    if (req.query.opportunity_id) {
+      query.opportunity_id = req.query.opportunity_id;
+    }
+
+    if (req.query.founder_email) {
+      const founderOpps = await opportunitiesCol
+        .find({ founder_email: req.query.founder_email })
+        .project({ _id: 1 })
+        .toArray();
+      const oppIds = founderOpps.map((o) => o._id.toString());
+      if (oppIds.length === 0) {
+        return res.json([]); // founder has no opportunities → no applications
+      }
+      query.opportunity_id = { $in: oppIds };
+    }
 
     const applications = await applicationsCol
       .find(query)
