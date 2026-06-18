@@ -28,11 +28,13 @@ const client = new MongoClient(uri, {
 client.connect().catch(console.dir);
 
 const db = client.db(process.env.MONGO_DB_NAME || "StartupForge_db");
-const startupsCol = db.collection("startups");
+const startupsCol      = db.collection("startups");
 const opportunitiesCol = db.collection("opportunities");
-const applicationsCol = db.collection("applications");
+const applicationsCol  = db.collection("applications");
+const usersCol         = db.collection("user"); // better-auth stores users in "user"
 
-//Startup
+// STARTUPS
+
 app.get("/api/my-startup", async (req, res) => {
   try {
     const { founder_email } = req.query;
@@ -55,7 +57,7 @@ app.get("/api/startups", async (req, res) => {
     if (search) {
       filter.$or = [
         { startup_name: { $regex: search, $options: "i" } },
-        { description: { $regex: search, $options: "i" } },
+        { description:  { $regex: search, $options: "i" } },
       ];
     }
     const startups = await startupsCol
@@ -85,22 +87,17 @@ app.get("/api/startups/:id", async (req, res) => {
 app.post("/api/startups", async (req, res) => {
   try {
     const {
-      startup_name,
-      industry,
-      description,
-      funding_stage,
-      logo,
-      founder_email,
+      startup_name, industry, description,
+      funding_stage, logo, founder_email,
     } = req.body;
+
     if (!startup_name || !industry || !description || !founder_email) {
       return res.status(400).json({ message: "Missing required fields" });
     }
 
     const existing = await startupsCol.findOne({ founder_email });
     if (existing) {
-      return res
-        .status(409)
-        .json({ message: "You already have a startup profile" });
+      return res.status(409).json({ message: "You already have a startup profile" });
     }
 
     const doc = {
@@ -108,9 +105,9 @@ app.post("/api/startups", async (req, res) => {
       industry,
       description,
       funding_stage: funding_stage || "Pre-Seed",
-      logo: logo || "",
+      logo:          logo || "",
       founder_email,
-      created_at: new Date(),
+      created_at:    new Date(),
     };
 
     const result = await startupsCol.insertOne(doc);
@@ -127,13 +124,7 @@ app.patch("/api/startups/:id", async (req, res) => {
     const filter = { _id: new ObjectId(req.params.id) };
     if (founder_email) filter.founder_email = founder_email;
 
-    const allowed = [
-      "startup_name",
-      "industry",
-      "description",
-      "funding_stage",
-      "logo",
-    ];
+    const allowed = ["startup_name", "industry", "description", "funding_stage", "logo"];
     const update = {};
     for (const key of allowed) {
       if (rest[key] !== undefined) update[key] = rest[key];
@@ -159,25 +150,24 @@ app.delete("/api/startups/:id", async (req, res) => {
   }
 });
 
-//Opportunities
+// OPPORTUNITIES
+
 app.get("/api/opportunities", async (req, res) => {
   try {
     const query = {};
+
     if (req.query.search) {
       query.$or = [
         { role_title: { $regex: req.query.search, $options: "i" } },
-        {
-          required_skills: {
-            $elemMatch: { $regex: req.query.search, $options: "i" },
-          },
-        },
+        { required_skills: { $elemMatch: { $regex: req.query.search, $options: "i" } } },
       ];
     }
-    if (req.query.workType) query.work_type = req.query.workType;
-    if (req.query.industry) query.industry = req.query.industry;
-    if (req.query.startup_id) query.startup_id = req.query.startup_id;
-    if (req.query.founder_email) query.founder_email = req.query.founder_email;
+    if (req.query.workType)      query.work_type      = req.query.workType;
+    if (req.query.industry)      query.industry       = req.query.industry;
+    if (req.query.startup_id)    query.startup_id     = req.query.startup_id;
+    if (req.query.founder_email) query.founder_email  = req.query.founder_email;
 
+    // limit — used by home page featured section
     if (req.query.limit) {
       const limit = parseInt(req.query.limit);
       const result = await opportunitiesCol
@@ -188,11 +178,12 @@ app.get("/api/opportunities", async (req, res) => {
       return res.json(result);
     }
 
+    // paginated — used by browse opportunities page
     if (req.query.page) {
-      const page = parseInt(req.query.page);
+      const page    = parseInt(req.query.page);
       const perPage = parseInt(req.query.perPage) || 9;
-      const skip = (page - 1) * perPage;
-      const total = await opportunitiesCol.countDocuments(query);
+      const skip    = (page - 1) * perPage;
+      const total   = await opportunitiesCol.countDocuments(query);
       const opportunities = await opportunitiesCol
         .find(query)
         .sort({ createdAt: -1 })
@@ -202,6 +193,7 @@ app.get("/api/opportunities", async (req, res) => {
       return res.json({ total, opportunities });
     }
 
+    // all — used by founder dashboard
     const result = await opportunitiesCol
       .find(query)
       .sort({ createdAt: -1 })
@@ -258,6 +250,29 @@ app.delete("/api/opportunities/:id", async (req, res) => {
   }
 });
 
+// Profile update
+app.patch("/api/users/profile", async (req, res) => {
+  try {
+    const { email, name, bio, skills, image } = req.body;
+    if (!email) return res.status(400).json({ message: "email is required" });
+
+    const update = {};
+    if (name   !== undefined) update.name   = name;
+    if (bio    !== undefined) update.bio    = bio;
+    if (skills !== undefined) update.skills = skills;
+    if (image  !== undefined) update.image  = image;
+
+    const result = await usersCol.updateOne(
+      { email },
+      { $set: update },
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
 app.listen(port, () => console.log(`StartupForge API running on port ${port}`));
 
 module.exports = app;
