@@ -272,6 +272,39 @@ app.patch("/api/users/profile", async (req, res) => {
   }
 });
 
+// Application
+
+app.get("/api/applications", async (req, res) => {
+  try {
+    const query = {};
+    if (req.query.applicant_email) query.applicant_email = req.query.applicant_email;
+    if (req.query.opportunity_id)  query.opportunity_id  = req.query.opportunity_id;
+    if (req.query.founder_email)   query.founder_email   = req.query.founder_email;
+
+    const applications = await applicationsCol
+      .find(query)
+      .sort({ applied_at: -1 })
+      .toArray();
+    res.json(applications);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/api/applications/:id", async (req, res) => {
+  try {
+    const result = await applicationsCol.findOne({
+      _id: new ObjectId(req.params.id),
+    });
+    if (!result) return res.status(404).json({ message: "Not found" });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
+
 // ─────────────────────────────────────────────
 app.listen(port, () => console.log(`StartupForge API running on port ${port}`));
 
