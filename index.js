@@ -32,6 +32,7 @@ const startupsCol = db.collection("startups");
 const opportunitiesCol = db.collection("opportunities");
 const applicationsCol = db.collection("applications");
 
+//Startup
 app.get("/api/my-startup", async (req, res) => {
   try {
     const { founder_email } = req.query;
@@ -45,7 +46,6 @@ app.get("/api/my-startup", async (req, res) => {
     res.status(500).json({ message: "Failed to fetch startup" });
   }
 });
-
 
 app.get("/api/startups", async (req, res) => {
   try {
@@ -68,7 +68,6 @@ app.get("/api/startups", async (req, res) => {
     res.status(500).json({ message: "Failed to fetch startups" });
   }
 });
-
 
 app.get("/api/startups/:id", async (req, res) => {
   try {
@@ -157,6 +156,105 @@ app.delete("/api/startups/:id", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(400).json({ message: "Failed to delete startup" });
+  }
+});
+
+//Opportunities
+app.get("/api/opportunities", async (req, res) => {
+  try {
+    const query = {};
+    if (req.query.search) {
+      query.$or = [
+        { role_title: { $regex: req.query.search, $options: "i" } },
+        {
+          required_skills: {
+            $elemMatch: { $regex: req.query.search, $options: "i" },
+          },
+        },
+      ];
+    }
+    if (req.query.workType) query.work_type = req.query.workType;
+    if (req.query.industry) query.industry = req.query.industry;
+    if (req.query.startup_id) query.startup_id = req.query.startup_id;
+    if (req.query.founder_email) query.founder_email = req.query.founder_email;
+
+    if (req.query.limit) {
+      const limit = parseInt(req.query.limit);
+      const result = await opportunitiesCol
+        .find(query)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .toArray();
+      return res.json(result);
+    }
+
+    if (req.query.page) {
+      const page = parseInt(req.query.page);
+      const perPage = parseInt(req.query.perPage) || 9;
+      const skip = (page - 1) * perPage;
+      const total = await opportunitiesCol.countDocuments(query);
+      const opportunities = await opportunitiesCol
+        .find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(perPage)
+        .toArray();
+      return res.json({ total, opportunities });
+    }
+
+    const result = await opportunitiesCol
+      .find(query)
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/api/opportunities/:id", async (req, res) => {
+  try {
+    const result = await opportunitiesCol.findOne({
+      _id: new ObjectId(req.params.id),
+    });
+    if (!result) return res.status(404).json({ message: "Not found" });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.post("/api/opportunities", async (req, res) => {
+  try {
+    const opp = { ...req.body, createdAt: new Date() };
+    const result = await opportunitiesCol.insertOne(opp);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.patch("/api/opportunities/:id", async (req, res) => {
+  try {
+    const { _id, ...updates } = req.body;
+    const result = await opportunitiesCol.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: updates },
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.delete("/api/opportunities/:id", async (req, res) => {
+  try {
+    const result = await opportunitiesCol.deleteOne({
+      _id: new ObjectId(req.params.id),
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
