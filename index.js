@@ -303,6 +303,58 @@ app.get("/api/applications/:id", async (req, res) => {
   }
 });
 
+app.post("/api/applications", async (req, res) => {
+  try {
+    const {
+      opportunity_id, applicant_email,
+      portfolio_link, motivation,
+      role_title, startup_name,
+    } = req.body;
+
+    if (!opportunity_id || !applicant_email || !motivation) {
+      return res.status(400).json({ message: "Missing required fields" });
+    }
+
+    // prevent duplicate applications
+    const existing = await applicationsCol.findOne({ opportunity_id, applicant_email });
+    if (existing) {
+      return res.status(409).json({ message: "You have already applied to this opportunity" });
+    }
+
+    const doc = {
+      opportunity_id,
+      applicant_email,
+      portfolio_link: portfolio_link || "",
+      motivation,
+      status:        "pending",
+      applied_at:    new Date(),
+      role_title:    role_title    || "",
+      startup_name:  startup_name  || "",
+    };
+
+    const result = await applicationsCol.insertOne(doc);
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.patch("/api/applications/:id", async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!["pending", "accepted", "rejected"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status" });
+    }
+
+    const result = await applicationsCol.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { status } },
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
 
 
 // ─────────────────────────────────────────────
