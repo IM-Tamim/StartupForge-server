@@ -31,7 +31,8 @@ const db = client.db(process.env.MONGO_DB_NAME || "StartupForge_db");
 const startupsCol      = db.collection("startups");
 const opportunitiesCol = db.collection("opportunities");
 const applicationsCol  = db.collection("applications");
-const usersCol         = db.collection("user"); // better-auth stores users in "user"
+const paymentsCol      = db.collection("payments");
+const usersCol         = db.collection("user");
 
 // STARTUPS
 
@@ -408,6 +409,60 @@ app.patch("/api/applications/:id", async (req, res) => {
     const result = await applicationsCol.updateOne(
       { _id: new ObjectId(req.params.id) },
       { $set: { status } },
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+//payments
+app.get("/api/payments", async (req, res) => {
+  try {
+    const payments = await paymentsCol
+      .find()
+      .sort({ paid_at: -1 })
+      .toArray();
+    res.json(payments);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.post("/api/payments", async (req, res) => {
+  try {
+    const { user_email, amount, transaction_id, payment_status, paid_at } = req.body;
+
+    if (!user_email || !transaction_id) {
+      return res.status(400).json({ message: "user_email and transaction_id are required" });
+    }
+
+    const existing = await paymentsCol.findOne({ transaction_id });
+    if (existing) return res.json({ acknowledged: true, duplicate: true });
+
+    const result = await paymentsCol.insertOne({
+      user_email,
+      amount:         amount || 19,
+      transaction_id,
+      payment_status: payment_status || "paid",
+      paid_at:        paid_at ? new Date(paid_at) : new Date(),
+    });
+
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.patch("/api/users/plan", async (req, res) => {
+  try {
+    const { email, plan } = req.body;
+    if (!email || !plan) {
+      return res.status(400).json({ message: "email and plan are required" });
+    }
+    const result = await usersCol.updateOne(
+      { email },
+      { $set: { plan } },
     );
     res.json(result);
   } catch (err) {
