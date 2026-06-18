@@ -250,28 +250,6 @@ app.delete("/api/opportunities/:id", async (req, res) => {
   }
 });
 
-// Profile update
-app.patch("/api/users/profile", async (req, res) => {
-  try {
-    const { email, name, bio, skills, image } = req.body;
-    if (!email) return res.status(400).json({ message: "email is required" });
-
-    const update = {};
-    if (name   !== undefined) update.name   = name;
-    if (bio    !== undefined) update.bio    = bio;
-    if (skills !== undefined) update.skills = skills;
-    if (image  !== undefined) update.image  = image;
-
-    const result = await usersCol.updateOne(
-      { email },
-      { $set: update },
-    );
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
 // Application
 
 app.get("/api/applications", async (req, res) => {
