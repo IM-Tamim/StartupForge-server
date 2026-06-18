@@ -49,10 +49,11 @@ app.get("/api/my-startup", async (req, res) => {
   }
 });
 
+// PUBLIC browse startups — only approved
 app.get("/api/startups", async (req, res) => {
   try {
     const { search, industry } = req.query;
-    const filter = {};
+    const filter = { status: "approved" };
     if (industry) filter.industry = industry;
     if (search) {
       filter.$or = [
@@ -84,6 +85,7 @@ app.get("/api/startups/:id", async (req, res) => {
   }
 });
 
+// Founder creates startup — defaults to pending (needs admin approval)
 app.post("/api/startups", async (req, res) => {
   try {
     const {
@@ -107,6 +109,7 @@ app.post("/api/startups", async (req, res) => {
       funding_stage: funding_stage || "Pre-Seed",
       logo:          logo || "",
       founder_email,
+      status:        "pending", // <-- needs admin approval
       created_at:    new Date(),
     };
 
@@ -250,6 +253,70 @@ app.delete("/api/opportunities/:id", async (req, res) => {
   }
 });
 
+// ADMIN — USERS
+
+app.get("/api/users", async (req, res) => {
+  try {
+    const users = await usersCol
+      .find({}, { projection: { password: 0 } }) // never expose password hash
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.patch("/api/users/:id/block", async (req, res) => {
+  try {
+    const { isBlocked } = req.body;
+    const result = await usersCol.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { isBlocked: isBlocked === true } },
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/api/admin/startups", async (req, res) => {
+  try {
+    const filter = {};
+    if (req.query.status) filter.status = req.query.status;
+    const startups = await startupsCol
+      .find(filter)
+      .sort({ created_at: -1 })
+      .toArray();
+    res.json(startups);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.patch("/api/admin/startups/:id/approve", async (req, res) => {
+  try {
+    const result = await startupsCol.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { status: "approved" } },
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.delete("/api/admin/startups/:id", async (req, res) => {
+  try {
+    const result = await startupsCol.deleteOne({
+      _id: new ObjectId(req.params.id),
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // Application
 
 app.get("/api/applications", async (req, res) => {
@@ -259,11 +326,9 @@ app.get("/api/applications", async (req, res) => {
     if (req.query.applicant_email) {
       query.applicant_email = req.query.applicant_email;
     }
-
     if (req.query.opportunity_id) {
       query.opportunity_id = req.query.opportunity_id;
     }
-
     if (req.query.founder_email) {
       const founderOpps = await opportunitiesCol
         .find({ founder_email: req.query.founder_email })
@@ -271,7 +336,7 @@ app.get("/api/applications", async (req, res) => {
         .toArray();
       const oppIds = founderOpps.map((o) => o._id.toString());
       if (oppIds.length === 0) {
-        return res.json([]); // founder has no opportunities → no applications
+        return res.json([]);
       }
       query.opportunity_id = { $in: oppIds };
     }
@@ -310,7 +375,6 @@ app.post("/api/applications", async (req, res) => {
       return res.status(400).json({ message: "Missing required fields" });
     }
 
-    // prevent duplicate applications
     const existing = await applicationsCol.findOne({ opportunity_id, applicant_email });
     if (existing) {
       return res.status(409).json({ message: "You have already applied to this opportunity" });
@@ -352,7 +416,6 @@ app.patch("/api/applications/:id", async (req, res) => {
 });
 
 
-// ─────────────────────────────────────────────
 app.listen(port, () => console.log(`StartupForge API running on port ${port}`));
 
 module.exports = app;
