@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const cookieParser = require("cookie-parser");
 const app = express();
 const port = process.env.PORT || 5000;
 require("dotenv").config();
@@ -13,6 +14,7 @@ app.use(
   }),
 );
 app.use(express.json());
+app.use(cookieParser());
 
 app.get("/", (req, res) => res.send("StartupForge API running"));
 
@@ -33,14 +35,76 @@ const opportunitiesCol = db.collection("opportunities");
 const applicationsCol  = db.collection("applications");
 const paymentsCol      = db.collection("payments");
 const usersCol         = db.collection("user");
+const sessionCol       = db.collection("session");
+
+// AUTH MIDDLEWARE
+
+const verifyToken = async (req, res, next) => {
+  const sessionToken =
+    req.cookies["better-auth.session_token"] ||
+    req.cookies["session_token"] ||
+    req.cookies["__Secure-better-auth.session_token"];
+
+  if (!sessionToken) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+
+  const query = { token: sessionToken };
+  const session = await sessionCol.findOne(query);
+
+  if (!session) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+
+  const userId = session.userId;
+
+  let userQuery;
+  try {
+    userQuery = { _id: new ObjectId(userId) };
+  } catch {
+    userQuery = { _id: userId };
+  }
+
+  const user = await usersCol.findOne(userQuery);
+  if (!user) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+
+  req.user = user;
+  next();
+};
+
+const verifyFounder = async (req, res, next) => {
+  if (req.user?.role !== "founder") {
+    return res.status(403).send({ message: "forbidden access" });
+  }
+  next();
+};
+
+const verifyCollaborator = async (req, res, next) => {
+  if (req.user?.role !== "collaborator") {
+    return res.status(403).send({ message: "forbidden access" });
+  }
+  next();
+};
+
+const verifyAdmin = async (req, res, next) => {
+  if (req.user?.role !== "admin") {
+    return res.status(403).send({ message: "forbidden access" });
+  }
+  next();
+};
 
 // STARTUPS
 
-app.get("/api/my-startup", async (req, res) => {
+app.get("/api/my-startup", verifyToken, async (req, res) => {
   try {
     const { founder_email } = req.query;
     if (!founder_email) {
       return res.status(400).json({ message: "founder_email is required" });
+    }
+    if (req.user.email !== founder_email && req.user.role !== "admin") {
+      return res.status(403).send({ message: "forbidden access" });
     }
     const startup = await startupsCol.findOne({ founder_email });
     res.json(startup || {});
@@ -50,7 +114,6 @@ app.get("/api/my-startup", async (req, res) => {
   }
 });
 
-// PUBLIC browse startups — only approved
 app.get("/api/startups", async (req, res) => {
   try {
     const { search, industry } = req.query;
@@ -86,8 +149,7 @@ app.get("/api/startups/:id", async (req, res) => {
   }
 });
 
-// Founder creates startup — defaults to pending (needs admin approval)
-app.post("/api/startups", async (req, res) => {
+app.post("/api/startups", verifyToken, verifyFounder, async (req, res) => {
   try {
     const {
       startup_name, industry, description,
@@ -98,7 +160,11 @@ app.post("/api/startups", async (req, res) => {
       return res.status(400).json({ message: "Missing required fields" });
     }
 
-    const existing = await startupsCol.findOne({ founder_email });
+    if (req.user.email !== founder_email) {
+      return res.status(403).send({ message: "forbidden access" });
+    }
+
+    const existing = await startupsCol.findOne({ founder_email: req.user.email });
     if (existing) {
       return res.status(409).json({ message: "You already have a startup profile" });
     }
@@ -109,8 +175,8 @@ app.post("/api/startups", async (req, res) => {
       description,
       funding_stage: funding_stage || "Pre-Seed",
       logo:          logo || "",
-      founder_email,
-      status:        "pending", // <-- needs admin approval
+      founder_email: req.user.email,
+      status:        "pending",
       created_at:    new Date(),
     };
 
@@ -122,11 +188,13 @@ app.post("/api/startups", async (req, res) => {
   }
 });
 
-app.patch("/api/startups/:id", async (req, res) => {
+app.patch("/api/startups/:id", verifyToken, async (req, res) => {
   try {
     const { founder_email, ...rest } = req.body;
     const filter = { _id: new ObjectId(req.params.id) };
-    if (founder_email) filter.founder_email = founder_email;
+    if (req.user.role !== "admin") {
+      filter.founder_email = req.user.email;
+    }
 
     const allowed = ["startup_name", "industry", "description", "funding_stage", "logo"];
     const update = {};
@@ -142,11 +210,13 @@ app.patch("/api/startups/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/startups/:id", async (req, res) => {
+app.delete("/api/startups/:id", verifyToken, async (req, res) => {
   try {
-    const result = await startupsCol.deleteOne({
-      _id: new ObjectId(req.params.id),
-    });
+    const filter = { _id: new ObjectId(req.params.id) };
+    if (req.user.role !== "admin") {
+      filter.founder_email = req.user.email;
+    }
+    const result = await startupsCol.deleteOne(filter);
     res.json(result);
   } catch (err) {
     console.error(err);
@@ -171,7 +241,6 @@ app.get("/api/opportunities", async (req, res) => {
     if (req.query.startup_id)    query.startup_id     = req.query.startup_id;
     if (req.query.founder_email) query.founder_email  = req.query.founder_email;
 
-    // limit — used by home page featured section
     if (req.query.limit) {
       const limit = parseInt(req.query.limit);
       const result = await opportunitiesCol
@@ -182,7 +251,6 @@ app.get("/api/opportunities", async (req, res) => {
       return res.json(result);
     }
 
-    // paginated — used by browse opportunities page
     if (req.query.page) {
       const page    = parseInt(req.query.page);
       const perPage = parseInt(req.query.perPage) || 9;
@@ -197,7 +265,6 @@ app.get("/api/opportunities", async (req, res) => {
       return res.json({ total, opportunities });
     }
 
-    // all — used by founder dashboard
     const result = await opportunitiesCol
       .find(query)
       .sort({ createdAt: -1 })
@@ -220,9 +287,10 @@ app.get("/api/opportunities/:id", async (req, res) => {
   }
 });
 
-app.post("/api/opportunities", async (req, res) => {
+app.post("/api/opportunities", verifyToken, verifyFounder, async (req, res) => {
   try {
     const opp = { ...req.body, createdAt: new Date() };
+    opp.founder_email = req.user.email;
     const result = await opportunitiesCol.insertOne(opp);
     res.json(result);
   } catch (err) {
@@ -230,36 +298,39 @@ app.post("/api/opportunities", async (req, res) => {
   }
 });
 
-app.patch("/api/opportunities/:id", async (req, res) => {
+app.patch("/api/opportunities/:id", verifyToken, async (req, res) => {
   try {
     const { _id, ...updates } = req.body;
-    const result = await opportunitiesCol.updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: updates },
-    );
+    const filter = { _id: new ObjectId(req.params.id) };
+    if (req.user.role !== "admin") {
+      filter.founder_email = req.user.email;
+    }
+    const result = await opportunitiesCol.updateOne(filter, { $set: updates });
     res.json(result);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-app.delete("/api/opportunities/:id", async (req, res) => {
+app.delete("/api/opportunities/:id", verifyToken, async (req, res) => {
   try {
-    const result = await opportunitiesCol.deleteOne({
-      _id: new ObjectId(req.params.id),
-    });
+    const filter = { _id: new ObjectId(req.params.id) };
+    if (req.user.role !== "admin") {
+      filter.founder_email = req.user.email;
+    }
+    const result = await opportunitiesCol.deleteOne(filter);
     res.json(result);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-// ADMIN — USERS
+// ADMIN
 
-app.get("/api/users", async (req, res) => {
+app.get("/api/users", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const users = await usersCol
-      .find({}, { projection: { password: 0 } }) // never expose password hash
+      .find({}, { projection: { password: 0 } })
       .sort({ createdAt: -1 })
       .toArray();
     res.json(users);
@@ -268,7 +339,7 @@ app.get("/api/users", async (req, res) => {
   }
 });
 
-app.patch("/api/users/:id/block", async (req, res) => {
+app.patch("/api/users/:id/block", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { isBlocked } = req.body;
     const result = await usersCol.updateOne(
@@ -281,7 +352,7 @@ app.patch("/api/users/:id/block", async (req, res) => {
   }
 });
 
-app.get("/api/admin/startups", async (req, res) => {
+app.get("/api/admin/startups", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
@@ -295,7 +366,7 @@ app.get("/api/admin/startups", async (req, res) => {
   }
 });
 
-app.patch("/api/admin/startups/:id/approve", async (req, res) => {
+app.patch("/api/admin/startups/:id/approve", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await startupsCol.updateOne(
       { _id: new ObjectId(req.params.id) },
@@ -307,7 +378,7 @@ app.patch("/api/admin/startups/:id/approve", async (req, res) => {
   }
 });
 
-app.delete("/api/admin/startups/:id", async (req, res) => {
+app.delete("/api/admin/startups/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await startupsCol.deleteOne({
       _id: new ObjectId(req.params.id),
@@ -318,19 +389,25 @@ app.delete("/api/admin/startups/:id", async (req, res) => {
   }
 });
 
-// Application
+// APPLICATIONS
 
-app.get("/api/applications", async (req, res) => {
+app.get("/api/applications", verifyToken, async (req, res) => {
   try {
     const query = {};
 
     if (req.query.applicant_email) {
+      if (req.user.email !== req.query.applicant_email && req.user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
       query.applicant_email = req.query.applicant_email;
     }
     if (req.query.opportunity_id) {
       query.opportunity_id = req.query.opportunity_id;
     }
     if (req.query.founder_email) {
+      if (req.user.email !== req.query.founder_email && req.user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
       const founderOpps = await opportunitiesCol
         .find({ founder_email: req.query.founder_email })
         .project({ _id: 1 })
@@ -352,7 +429,7 @@ app.get("/api/applications", async (req, res) => {
   }
 });
 
-app.get("/api/applications/:id", async (req, res) => {
+app.get("/api/applications/:id", verifyToken, async (req, res) => {
   try {
     const result = await applicationsCol.findOne({
       _id: new ObjectId(req.params.id),
@@ -364,7 +441,7 @@ app.get("/api/applications/:id", async (req, res) => {
   }
 });
 
-app.post("/api/applications", async (req, res) => {
+app.post("/api/applications", verifyToken, verifyCollaborator, async (req, res) => {
   try {
     const {
       opportunity_id, applicant_email,
@@ -376,14 +453,18 @@ app.post("/api/applications", async (req, res) => {
       return res.status(400).json({ message: "Missing required fields" });
     }
 
-    const existing = await applicationsCol.findOne({ opportunity_id, applicant_email });
+    if (req.user.email !== applicant_email) {
+      return res.status(403).send({ message: "forbidden access" });
+    }
+
+    const existing = await applicationsCol.findOne({ opportunity_id, applicant_email: req.user.email });
     if (existing) {
       return res.status(409).json({ message: "You have already applied to this opportunity" });
     }
 
     const doc = {
       opportunity_id,
-      applicant_email,
+      applicant_email: req.user.email,
       portfolio_link: portfolio_link || "",
       motivation,
       status:        "pending",
@@ -399,11 +480,26 @@ app.post("/api/applications", async (req, res) => {
   }
 });
 
-app.patch("/api/applications/:id", async (req, res) => {
+app.patch("/api/applications/:id", verifyToken, async (req, res) => {
   try {
     const { status } = req.body;
     if (!["pending", "accepted", "rejected"].includes(status)) {
       return res.status(400).json({ message: "Invalid status" });
+    }
+
+    if (req.user.role !== "founder" && req.user.role !== "admin") {
+      return res.status(403).send({ message: "forbidden access" });
+    }
+
+    if (req.user.role === "founder") {
+      const application = await applicationsCol.findOne({ _id: new ObjectId(req.params.id) });
+      if (!application) {
+        return res.status(404).json({ message: "Application not found" });
+      }
+      const opportunity = await opportunitiesCol.findOne({ _id: new ObjectId(application.opportunity_id) });
+      if (!opportunity || opportunity.founder_email !== req.user.email) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
     }
 
     const result = await applicationsCol.updateOne(
@@ -416,8 +512,9 @@ app.patch("/api/applications/:id", async (req, res) => {
   }
 });
 
-//payments
-app.get("/api/payments", async (req, res) => {
+// PAYMENTS
+
+app.get("/api/payments", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const payments = await paymentsCol
       .find()
@@ -469,7 +566,6 @@ app.patch("/api/users/plan", async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-
 
 app.listen(port, () => console.log(`StartupForge API running on port ${port}`));
 
