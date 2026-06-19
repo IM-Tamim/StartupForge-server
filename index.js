@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const jwt = require("jsonwebtoken");
 const app = express();
 const port = process.env.PORT || 5000;
 require("dotenv").config();
@@ -35,66 +36,57 @@ const opportunitiesCol = db.collection("opportunities");
 const applicationsCol  = db.collection("applications");
 const paymentsCol      = db.collection("payments");
 const usersCol         = db.collection("user");
-const sessionCol       = db.collection("session");
 
-// AUTH MIDDLEWARE
+// AUTH MIDDLEWARE — JWT based
 
 const verifyToken = async (req, res, next) => {
-  const sessionToken =
-    req.cookies["better-auth.session_token"] ||
-    req.cookies["session_token"] ||
-    req.cookies["__Secure-better-auth.session_token"];
+  const token = req.cookies["access_token"];
 
-  if (!sessionToken) {
-    return res.status(401).send({ message: "unauthorized access" });
+  if (!token) {
+    return res.status(401).json({ message: "unauthorized access" });
   }
 
-  const query = { token: sessionToken };
-  const session = await sessionCol.findOne(query);
-
-  if (!session) {
-    return res.status(401).send({ message: "unauthorized access" });
-  }
-
-  const userId = session.userId;
-
-  let userQuery;
   try {
-    userQuery = { _id: new ObjectId(userId) };
-  } catch {
-    userQuery = { _id: userId };
-  }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-  const user = await usersCol.findOne(userQuery);
-  if (!user) {
-    return res.status(401).send({ message: "unauthorized access" });
-  }
+    // Check if the user has been blocked since the token was issued
+    const dbUser = await usersCol.findOne(
+      { email: decoded.email },
+      { projection: { isBlocked: 1 } }
+    );
+    if (dbUser?.isBlocked) {
+      return res.status(403).json({ message: "Your account has been blocked." });
+    }
 
-  req.user = user;
-  next();
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(401).json({ message: "unauthorized access" });
+  }
 };
 
-const verifyFounder = async (req, res, next) => {
+const verifyFounder = (req, res, next) => {
   if (req.user?.role !== "founder") {
-    return res.status(403).send({ message: "forbidden access" });
+    return res.status(403).json({ message: "forbidden access" });
   }
   next();
 };
 
-const verifyCollaborator = async (req, res, next) => {
+const verifyCollaborator = (req, res, next) => {
   if (req.user?.role !== "collaborator") {
-    return res.status(403).send({ message: "forbidden access" });
+    return res.status(403).json({ message: "forbidden access" });
   }
   next();
 };
 
-const verifyAdmin = async (req, res, next) => {
+const verifyAdmin = (req, res, next) => {
   if (req.user?.role !== "admin") {
-    return res.status(403).send({ message: "forbidden access" });
+    return res.status(403).json({ message: "forbidden access" });
   }
   next();
 };
 
+// Locks payment/plan routes to our own server only — not callable from a browser.
 const verifyInternal = (req, res, next) => {
   const key = req.headers["x-internal-key"];
   if (!key || key !== process.env.INTERNAL_API_KEY) {
@@ -102,6 +94,21 @@ const verifyInternal = (req, res, next) => {
   }
   next();
 };
+
+// PUBLIC STATS
+
+app.get("/api/stats", async (req, res) => {
+  try {
+    const [startupsCount, oppsCount, appsCount] = await Promise.all([
+      startupsCol.countDocuments({ status: "approved" }),
+      opportunitiesCol.countDocuments({}),
+      applicationsCol.countDocuments({ status: "accepted" }),
+    ]);
+    res.json({ startups: startupsCount, opportunities: oppsCount, teamsFormed: appsCount });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
 
 // STARTUPS
 
@@ -112,7 +119,7 @@ app.get("/api/my-startup", verifyToken, async (req, res) => {
       return res.status(400).json({ message: "founder_email is required" });
     }
     if (req.user.email !== founder_email && req.user.role !== "admin") {
-      return res.status(403).send({ message: "forbidden access" });
+      return res.status(403).json({ message: "forbidden access" });
     }
     const startup = await startupsCol.findOne({ founder_email });
     res.json(startup || {});
@@ -124,7 +131,7 @@ app.get("/api/my-startup", verifyToken, async (req, res) => {
 
 app.get("/api/startups", async (req, res) => {
   try {
-    const { search, industry } = req.query;
+    const { search, industry, limit } = req.query;
     const filter = { status: "approved" };
     if (industry) filter.industry = industry;
     if (search) {
@@ -133,10 +140,9 @@ app.get("/api/startups", async (req, res) => {
         { description:  { $regex: search, $options: "i" } },
       ];
     }
-    const startups = await startupsCol
-      .find(filter)
-      .sort({ created_at: -1 })
-      .toArray();
+    let q = startupsCol.find(filter).sort({ created_at: -1 });
+    if (limit) q = q.limit(parseInt(limit));
+    const startups = await q.toArray();
     res.json(startups);
   } catch (err) {
     console.error(err);
@@ -169,7 +175,7 @@ app.post("/api/startups", verifyToken, verifyFounder, async (req, res) => {
     }
 
     if (req.user.email !== founder_email) {
-      return res.status(403).send({ message: "forbidden access" });
+      return res.status(403).json({ message: "forbidden access" });
     }
 
     const existing = await startupsCol.findOne({ founder_email: req.user.email });
@@ -297,6 +303,19 @@ app.get("/api/opportunities/:id", async (req, res) => {
 
 app.post("/api/opportunities", verifyToken, verifyFounder, async (req, res) => {
   try {
+    const user = await usersCol.findOne({ email: req.user.email });
+    const isPremium = user?.plan === "founder_premium";
+
+    if (!isPremium) {
+      const count = await opportunitiesCol.countDocuments({ founder_email: req.user.email });
+      if (count >= 3) {
+        return res.status(403).json({
+          message: "Free limit reached. Upgrade to Premium to post more opportunities.",
+          requiresUpgrade: true,
+        });
+      }
+    }
+
     const opp = { ...req.body, createdAt: new Date() };
     opp.founder_email = req.user.email;
     const result = await opportunitiesCol.insertOne(opp);
@@ -333,7 +352,7 @@ app.delete("/api/opportunities/:id", verifyToken, async (req, res) => {
   }
 });
 
-// ADMIN
+// ADMIN — USERS
 
 app.get("/api/users", verifyToken, verifyAdmin, async (req, res) => {
   try {
@@ -359,6 +378,10 @@ app.patch("/api/users/:id/block", verifyToken, verifyAdmin, async (req, res) => 
     res.status(500).json({ message: err.message });
   }
 });
+
+// ─────────────────────────────────────────────
+// ADMIN — STARTUPS
+// ─────────────────────────────────────────────
 
 app.get("/api/admin/startups", verifyToken, verifyAdmin, async (req, res) => {
   try {
@@ -397,7 +420,9 @@ app.delete("/api/admin/startups/:id", verifyToken, verifyAdmin, async (req, res)
   }
 });
 
+// ─────────────────────────────────────────────
 // APPLICATIONS
+// ─────────────────────────────────────────────
 
 app.get("/api/applications", verifyToken, async (req, res) => {
   try {
@@ -405,7 +430,7 @@ app.get("/api/applications", verifyToken, async (req, res) => {
 
     if (req.query.applicant_email) {
       if (req.user.email !== req.query.applicant_email && req.user.role !== "admin") {
-        return res.status(403).send({ message: "forbidden access" });
+        return res.status(403).json({ message: "forbidden access" });
       }
       query.applicant_email = req.query.applicant_email;
     }
@@ -414,7 +439,7 @@ app.get("/api/applications", verifyToken, async (req, res) => {
     }
     if (req.query.founder_email) {
       if (req.user.email !== req.query.founder_email && req.user.role !== "admin") {
-        return res.status(403).send({ message: "forbidden access" });
+        return res.status(403).json({ message: "forbidden access" });
       }
       const founderOpps = await opportunitiesCol
         .find({ founder_email: req.query.founder_email })
@@ -462,7 +487,7 @@ app.post("/api/applications", verifyToken, verifyCollaborator, async (req, res) 
     }
 
     if (req.user.email !== applicant_email) {
-      return res.status(403).send({ message: "forbidden access" });
+      return res.status(403).json({ message: "forbidden access" });
     }
 
     const existing = await applicationsCol.findOne({ opportunity_id, applicant_email: req.user.email });
@@ -496,7 +521,7 @@ app.patch("/api/applications/:id", verifyToken, async (req, res) => {
     }
 
     if (req.user.role !== "founder" && req.user.role !== "admin") {
-      return res.status(403).send({ message: "forbidden access" });
+      return res.status(403).json({ message: "forbidden access" });
     }
 
     if (req.user.role === "founder") {
@@ -506,7 +531,7 @@ app.patch("/api/applications/:id", verifyToken, async (req, res) => {
       }
       const opportunity = await opportunitiesCol.findOne({ _id: new ObjectId(application.opportunity_id) });
       if (!opportunity || opportunity.founder_email !== req.user.email) {
-        return res.status(403).send({ message: "forbidden access" });
+        return res.status(403).json({ message: "forbidden access" });
       }
     }
 
@@ -520,7 +545,52 @@ app.patch("/api/applications/:id", verifyToken, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// USER PROFILE UPDATE (collaborator/any user)
+// ─────────────────────────────────────────────
+
+app.patch("/api/users/profile", verifyToken, async (req, res) => {
+  try {
+    const { name, image, bio, skills, email } = req.body;
+    if (req.user.email !== email && req.user.role !== "admin") {
+      return res.status(403).json({ message: "forbidden access" });
+    }
+    const update = {};
+    if (name !== undefined)   update.name   = name;
+    if (image !== undefined)  update.image  = image;
+    if (bio !== undefined)    update.bio    = bio;
+    if (skills !== undefined) update.skills = skills;
+
+    const result = await usersCol.updateOne(
+      { email: req.user.email },
+      { $set: update },
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Admin summary stats
+app.get("/api/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const [usersCount, startupsCount, oppsCount, paymentsArr, appsArr] = await Promise.all([
+      usersCol.countDocuments({}),
+      startupsCol.countDocuments({}),
+      opportunitiesCol.countDocuments({}),
+      paymentsCol.find({ payment_status: "paid" }).toArray(),
+      applicationsCol.countDocuments({ status: "pending" }),
+    ]);
+    const revenue = paymentsArr.reduce((sum, p) => sum + (p.amount || 0), 0);
+    res.json({ users: usersCount, startups: startupsCount, opportunities: oppsCount, revenue, pendingApps: appsArr });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
 // PAYMENTS
+// ─────────────────────────────────────────────
 
 app.get("/api/payments", verifyToken, verifyAdmin, async (req, res) => {
   try {
@@ -533,18 +603,20 @@ app.get("/api/payments", verifyToken, verifyAdmin, async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
- 
+
+// Only our own Next.js server (payment success page) can call this —
+// it has already verified the Stripe session server-side before calling.
 app.post("/api/payments", verifyInternal, async (req, res) => {
   try {
     const { user_email, amount, transaction_id, payment_status, paid_at } = req.body;
- 
+
     if (!user_email || !transaction_id) {
       return res.status(400).json({ message: "user_email and transaction_id are required" });
     }
- 
+
     const existing = await paymentsCol.findOne({ transaction_id });
     if (existing) return res.json({ acknowledged: true, duplicate: true });
- 
+
     const result = await paymentsCol.insertOne({
       user_email,
       amount:         amount || 19,
@@ -552,13 +624,14 @@ app.post("/api/payments", verifyInternal, async (req, res) => {
       payment_status: payment_status || "paid",
       paid_at:        paid_at ? new Date(paid_at) : new Date(),
     });
- 
+
     res.status(201).json(result);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
- 
+
+// Same internal-only protection — prevents self-upgrade fraud.
 app.patch("/api/users/plan", verifyInternal, async (req, res) => {
   try {
     const { email, plan } = req.body;
