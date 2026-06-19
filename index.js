@@ -95,6 +95,14 @@ const verifyAdmin = async (req, res, next) => {
   next();
 };
 
+const verifyInternal = (req, res, next) => {
+  const key = req.headers["x-internal-key"];
+  if (!key || key !== process.env.INTERNAL_API_KEY) {
+    return res.status(403).json({ message: "forbidden access" });
+  }
+  next();
+};
+
 // STARTUPS
 
 app.get("/api/my-startup", verifyToken, async (req, res) => {
@@ -525,18 +533,18 @@ app.get("/api/payments", verifyToken, verifyAdmin, async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-
-app.post("/api/payments", async (req, res) => {
+ 
+app.post("/api/payments", verifyInternal, async (req, res) => {
   try {
     const { user_email, amount, transaction_id, payment_status, paid_at } = req.body;
-
+ 
     if (!user_email || !transaction_id) {
       return res.status(400).json({ message: "user_email and transaction_id are required" });
     }
-
+ 
     const existing = await paymentsCol.findOne({ transaction_id });
     if (existing) return res.json({ acknowledged: true, duplicate: true });
-
+ 
     const result = await paymentsCol.insertOne({
       user_email,
       amount:         amount || 19,
@@ -544,14 +552,14 @@ app.post("/api/payments", async (req, res) => {
       payment_status: payment_status || "paid",
       paid_at:        paid_at ? new Date(paid_at) : new Date(),
     });
-
+ 
     res.status(201).json(result);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
-
-app.patch("/api/users/plan", async (req, res) => {
+ 
+app.patch("/api/users/plan", verifyInternal, async (req, res) => {
   try {
     const { email, plan } = req.body;
     if (!email || !plan) {
