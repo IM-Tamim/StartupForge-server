@@ -31,11 +31,11 @@ const client = new MongoClient(uri, {
 client.connect().catch(console.dir);
 
 const db = client.db(process.env.MONGO_DB_NAME || "StartupForge_db");
-const startupsCol      = db.collection("startups");
+const startupsCol = db.collection("startups");
 const opportunitiesCol = db.collection("opportunities");
-const applicationsCol  = db.collection("applications");
-const paymentsCol      = db.collection("payments");
-const usersCol         = db.collection("user");
+const applicationsCol = db.collection("applications");
+const paymentsCol = db.collection("payments");
+const usersCol = db.collection("user");
 
 // AUTH MIDDLEWARE — JWT based
 
@@ -52,10 +52,12 @@ const verifyToken = async (req, res, next) => {
     // Check if the user has been blocked since the token was issued
     const dbUser = await usersCol.findOne(
       { email: decoded.email },
-      { projection: { isBlocked: 1 } }
+      { projection: { isBlocked: 1 } },
     );
     if (dbUser?.isBlocked) {
-      return res.status(403).json({ message: "Your account has been blocked." });
+      return res
+        .status(403)
+        .json({ message: "Your account has been blocked." });
     }
 
     req.user = decoded;
@@ -104,7 +106,11 @@ app.get("/api/stats", async (req, res) => {
       opportunitiesCol.countDocuments({}),
       applicationsCol.countDocuments({ status: "accepted" }),
     ]);
-    res.json({ startups: startupsCount, opportunities: oppsCount, teamsFormed: appsCount });
+    res.json({
+      startups: startupsCount,
+      opportunities: oppsCount,
+      teamsFormed: appsCount,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -137,7 +143,7 @@ app.get("/api/startups", async (req, res) => {
     if (search) {
       filter.$or = [
         { startup_name: { $regex: search, $options: "i" } },
-        { description:  { $regex: search, $options: "i" } },
+        { description: { $regex: search, $options: "i" } },
       ];
     }
     let q = startupsCol.find(filter).sort({ created_at: -1 });
@@ -166,8 +172,13 @@ app.get("/api/startups/:id", async (req, res) => {
 app.post("/api/startups", verifyToken, verifyFounder, async (req, res) => {
   try {
     const {
-      startup_name, industry, description,
-      funding_stage, logo, founder_email,
+      startup_name,
+      industry,
+      description,
+      funding_stage,
+      logo,
+      founder_email,
+      team_size,
     } = req.body;
 
     if (!startup_name || !industry || !description || !founder_email) {
@@ -178,9 +189,13 @@ app.post("/api/startups", verifyToken, verifyFounder, async (req, res) => {
       return res.status(403).json({ message: "forbidden access" });
     }
 
-    const existing = await startupsCol.findOne({ founder_email: req.user.email });
+    const existing = await startupsCol.findOne({
+      founder_email: req.user.email,
+    });
     if (existing) {
-      return res.status(409).json({ message: "You already have a startup profile" });
+      return res
+        .status(409)
+        .json({ message: "You already have a startup profile" });
     }
 
     const doc = {
@@ -188,10 +203,11 @@ app.post("/api/startups", verifyToken, verifyFounder, async (req, res) => {
       industry,
       description,
       funding_stage: funding_stage || "Pre-Seed",
-      logo:          logo || "",
+      logo: logo || "",
+      team_size: team_size ? parseInt(team_size) : 0,
       founder_email: req.user.email,
-      status:        "pending",
-      created_at:    new Date(),
+      status: "pending",
+      created_at: new Date(),
     };
 
     const result = await startupsCol.insertOne(doc);
@@ -210,7 +226,14 @@ app.patch("/api/startups/:id", verifyToken, async (req, res) => {
       filter.founder_email = req.user.email;
     }
 
-    const allowed = ["startup_name", "industry", "description", "funding_stage", "logo"];
+    const allowed = [
+      "startup_name",
+      "industry",
+      "description",
+      "funding_stage",
+      "logo",
+      "team_size",
+    ];
     const update = {};
     for (const key of allowed) {
       if (rest[key] !== undefined) update[key] = rest[key];
@@ -247,13 +270,17 @@ app.get("/api/opportunities", async (req, res) => {
     if (req.query.search) {
       query.$or = [
         { role_title: { $regex: req.query.search, $options: "i" } },
-        { required_skills: { $elemMatch: { $regex: req.query.search, $options: "i" } } },
+        {
+          required_skills: {
+            $elemMatch: { $regex: req.query.search, $options: "i" },
+          },
+        },
       ];
     }
-    if (req.query.workType)      query.work_type      = req.query.workType;
-    if (req.query.industry)      query.industry       = req.query.industry;
-    if (req.query.startup_id)    query.startup_id     = req.query.startup_id;
-    if (req.query.founder_email) query.founder_email  = req.query.founder_email;
+    if (req.query.workType) query.work_type = req.query.workType;
+    if (req.query.industry) query.industry = req.query.industry;
+    if (req.query.startup_id) query.startup_id = req.query.startup_id;
+    if (req.query.founder_email) query.founder_email = req.query.founder_email;
 
     if (req.query.limit) {
       const limit = parseInt(req.query.limit);
@@ -266,10 +293,10 @@ app.get("/api/opportunities", async (req, res) => {
     }
 
     if (req.query.page) {
-      const page    = parseInt(req.query.page);
+      const page = parseInt(req.query.page);
       const perPage = parseInt(req.query.perPage) || 9;
-      const skip    = (page - 1) * perPage;
-      const total   = await opportunitiesCol.countDocuments(query);
+      const skip = (page - 1) * perPage;
+      const total = await opportunitiesCol.countDocuments(query);
       const opportunities = await opportunitiesCol
         .find(query)
         .sort({ createdAt: -1 })
@@ -307,10 +334,13 @@ app.post("/api/opportunities", verifyToken, verifyFounder, async (req, res) => {
     const isPremium = user?.plan === "founder_premium";
 
     if (!isPremium) {
-      const count = await opportunitiesCol.countDocuments({ founder_email: req.user.email });
+      const count = await opportunitiesCol.countDocuments({
+        founder_email: req.user.email,
+      });
       if (count >= 3) {
         return res.status(403).json({
-          message: "Free limit reached. Upgrade to Premium to post more opportunities.",
+          message:
+            "Free limit reached. Upgrade to Premium to post more opportunities.",
           requiresUpgrade: true,
         });
       }
@@ -366,18 +396,23 @@ app.get("/api/users", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-app.patch("/api/users/:id/block", verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const { isBlocked } = req.body;
-    const result = await usersCol.updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { isBlocked: isBlocked === true } },
-    );
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
+app.patch(
+  "/api/users/:id/block",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const { isBlocked } = req.body;
+      const result = await usersCol.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { isBlocked: isBlocked === true } },
+      );
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  },
+);
 
 // ─────────────────────────────────────────────
 // ADMIN — STARTUPS
@@ -397,28 +432,38 @@ app.get("/api/admin/startups", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-app.patch("/api/admin/startups/:id/approve", verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const result = await startupsCol.updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { status: "approved" } },
-    );
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
+app.patch(
+  "/api/admin/startups/:id/approve",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const result = await startupsCol.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { status: "approved" } },
+      );
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  },
+);
 
-app.delete("/api/admin/startups/:id", verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const result = await startupsCol.deleteOne({
-      _id: new ObjectId(req.params.id),
-    });
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
+app.delete(
+  "/api/admin/startups/:id",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const result = await startupsCol.deleteOne({
+        _id: new ObjectId(req.params.id),
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  },
+);
 
 // ─────────────────────────────────────────────
 // APPLICATIONS
@@ -429,7 +474,10 @@ app.get("/api/applications", verifyToken, async (req, res) => {
     const query = {};
 
     if (req.query.applicant_email) {
-      if (req.user.email !== req.query.applicant_email && req.user.role !== "admin") {
+      if (
+        req.user.email !== req.query.applicant_email &&
+        req.user.role !== "admin"
+      ) {
         return res.status(403).json({ message: "forbidden access" });
       }
       query.applicant_email = req.query.applicant_email;
@@ -438,7 +486,10 @@ app.get("/api/applications", verifyToken, async (req, res) => {
       query.opportunity_id = req.query.opportunity_id;
     }
     if (req.query.founder_email) {
-      if (req.user.email !== req.query.founder_email && req.user.role !== "admin") {
+      if (
+        req.user.email !== req.query.founder_email &&
+        req.user.role !== "admin"
+      ) {
         return res.status(403).json({ message: "forbidden access" });
       }
       const founderOpps = await opportunitiesCol
@@ -474,44 +525,57 @@ app.get("/api/applications/:id", verifyToken, async (req, res) => {
   }
 });
 
-app.post("/api/applications", verifyToken, verifyCollaborator, async (req, res) => {
-  try {
-    const {
-      opportunity_id, applicant_email,
-      portfolio_link, motivation,
-      role_title, startup_name,
-    } = req.body;
+app.post(
+  "/api/applications",
+  verifyToken,
+  verifyCollaborator,
+  async (req, res) => {
+    try {
+      const {
+        opportunity_id,
+        applicant_email,
+        portfolio_link,
+        motivation,
+        role_title,
+        startup_name,
+      } = req.body;
 
-    if (!opportunity_id || !applicant_email || !motivation) {
-      return res.status(400).json({ message: "Missing required fields" });
+      if (!opportunity_id || !applicant_email || !motivation) {
+        return res.status(400).json({ message: "Missing required fields" });
+      }
+
+      if (req.user.email !== applicant_email) {
+        return res.status(403).json({ message: "forbidden access" });
+      }
+
+      const existing = await applicationsCol.findOne({
+        opportunity_id,
+        applicant_email: req.user.email,
+      });
+      if (existing) {
+        return res
+          .status(409)
+          .json({ message: "You have already applied to this opportunity" });
+      }
+
+      const doc = {
+        opportunity_id,
+        applicant_email: req.user.email,
+        portfolio_link: portfolio_link || "",
+        motivation,
+        status: "pending",
+        applied_at: new Date(),
+        role_title: role_title || "",
+        startup_name: startup_name || "",
+      };
+
+      const result = await applicationsCol.insertOne(doc);
+      res.status(201).json(result);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
     }
-
-    if (req.user.email !== applicant_email) {
-      return res.status(403).json({ message: "forbidden access" });
-    }
-
-    const existing = await applicationsCol.findOne({ opportunity_id, applicant_email: req.user.email });
-    if (existing) {
-      return res.status(409).json({ message: "You have already applied to this opportunity" });
-    }
-
-    const doc = {
-      opportunity_id,
-      applicant_email: req.user.email,
-      portfolio_link: portfolio_link || "",
-      motivation,
-      status:        "pending",
-      applied_at:    new Date(),
-      role_title:    role_title    || "",
-      startup_name:  startup_name  || "",
-    };
-
-    const result = await applicationsCol.insertOne(doc);
-    res.status(201).json(result);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
+  },
+);
 
 app.patch("/api/applications/:id", verifyToken, async (req, res) => {
   try {
@@ -525,11 +589,15 @@ app.patch("/api/applications/:id", verifyToken, async (req, res) => {
     }
 
     if (req.user.role === "founder") {
-      const application = await applicationsCol.findOne({ _id: new ObjectId(req.params.id) });
+      const application = await applicationsCol.findOne({
+        _id: new ObjectId(req.params.id),
+      });
       if (!application) {
         return res.status(404).json({ message: "Application not found" });
       }
-      const opportunity = await opportunitiesCol.findOne({ _id: new ObjectId(application.opportunity_id) });
+      const opportunity = await opportunitiesCol.findOne({
+        _id: new ObjectId(application.opportunity_id),
+      });
       if (!opportunity || opportunity.founder_email !== req.user.email) {
         return res.status(403).json({ message: "forbidden access" });
       }
@@ -556,9 +624,9 @@ app.patch("/api/users/profile", verifyToken, async (req, res) => {
       return res.status(403).json({ message: "forbidden access" });
     }
     const update = {};
-    if (name !== undefined)   update.name   = name;
-    if (image !== undefined)  update.image  = image;
-    if (bio !== undefined)    update.bio    = bio;
+    if (name !== undefined) update.name = name;
+    if (image !== undefined) update.image = image;
+    if (bio !== undefined) update.bio = bio;
     if (skills !== undefined) update.skills = skills;
 
     const result = await usersCol.updateOne(
@@ -574,15 +642,22 @@ app.patch("/api/users/profile", verifyToken, async (req, res) => {
 // Admin summary stats
 app.get("/api/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    const [usersCount, startupsCount, oppsCount, paymentsArr, appsArr] = await Promise.all([
-      usersCol.countDocuments({}),
-      startupsCol.countDocuments({}),
-      opportunitiesCol.countDocuments({}),
-      paymentsCol.find({ payment_status: "paid" }).toArray(),
-      applicationsCol.countDocuments({ status: "pending" }),
-    ]);
+    const [usersCount, startupsCount, oppsCount, paymentsArr, appsArr] =
+      await Promise.all([
+        usersCol.countDocuments({}),
+        startupsCol.countDocuments({}),
+        opportunitiesCol.countDocuments({}),
+        paymentsCol.find({ payment_status: "paid" }).toArray(),
+        applicationsCol.countDocuments({ status: "pending" }),
+      ]);
     const revenue = paymentsArr.reduce((sum, p) => sum + (p.amount || 0), 0);
-    res.json({ users: usersCount, startups: startupsCount, opportunities: oppsCount, revenue, pendingApps: appsArr });
+    res.json({
+      users: usersCount,
+      startups: startupsCount,
+      opportunities: oppsCount,
+      revenue,
+      pendingApps: appsArr,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -594,10 +669,7 @@ app.get("/api/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
 
 app.get("/api/payments", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    const payments = await paymentsCol
-      .find()
-      .sort({ paid_at: -1 })
-      .toArray();
+    const payments = await paymentsCol.find().sort({ paid_at: -1 }).toArray();
     res.json(payments);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -608,10 +680,13 @@ app.get("/api/payments", verifyToken, verifyAdmin, async (req, res) => {
 // it has already verified the Stripe session server-side before calling.
 app.post("/api/payments", verifyInternal, async (req, res) => {
   try {
-    const { user_email, amount, transaction_id, payment_status, paid_at } = req.body;
+    const { user_email, amount, transaction_id, payment_status, paid_at } =
+      req.body;
 
     if (!user_email || !transaction_id) {
-      return res.status(400).json({ message: "user_email and transaction_id are required" });
+      return res
+        .status(400)
+        .json({ message: "user_email and transaction_id are required" });
     }
 
     const existing = await paymentsCol.findOne({ transaction_id });
@@ -619,10 +694,10 @@ app.post("/api/payments", verifyInternal, async (req, res) => {
 
     const result = await paymentsCol.insertOne({
       user_email,
-      amount:         amount || 19,
+      amount: amount || 19,
       transaction_id,
       payment_status: payment_status || "paid",
-      paid_at:        paid_at ? new Date(paid_at) : new Date(),
+      paid_at: paid_at ? new Date(paid_at) : new Date(),
     });
 
     res.status(201).json(result);
@@ -638,10 +713,7 @@ app.patch("/api/users/plan", verifyInternal, async (req, res) => {
     if (!email || !plan) {
       return res.status(400).json({ message: "email and plan are required" });
     }
-    const result = await usersCol.updateOne(
-      { email },
-      { $set: { plan } },
-    );
+    const result = await usersCol.updateOne({ email }, { $set: { plan } });
     res.json(result);
   } catch (err) {
     res.status(500).json({ message: err.message });
