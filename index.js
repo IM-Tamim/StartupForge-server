@@ -88,7 +88,6 @@ const verifyAdmin = (req, res, next) => {
   next();
 };
 
-// Locks payment/plan routes to our own server only — not callable from a browser.
 const verifyInternal = (req, res, next) => {
   const key = req.headers["x-internal-key"];
   if (!key || key !== process.env.INTERNAL_API_KEY) {
@@ -178,6 +177,7 @@ app.post("/api/startups", verifyToken, verifyFounder, async (req, res) => {
       funding_stage,
       logo,
       founder_email,
+      founder_name,
       team_size,
     } = req.body;
 
@@ -206,6 +206,7 @@ app.post("/api/startups", verifyToken, verifyFounder, async (req, res) => {
       logo: logo || "",
       team_size: team_size ? parseInt(team_size) : 0,
       founder_email: req.user.email,
+      founder_name: founder_name || req.user.name || "",
       status: "pending",
       created_at: new Date(),
     };
@@ -233,6 +234,7 @@ app.patch("/api/startups/:id", verifyToken, async (req, res) => {
       "funding_stage",
       "logo",
       "team_size",
+      "founder_name",
     ];
     const update = {};
     for (const key of allowed) {
@@ -277,8 +279,8 @@ app.get("/api/opportunities", async (req, res) => {
         },
       ];
     }
-    if (req.query.workType) query.work_type = req.query.workType;
-    if (req.query.industry) query.industry = req.query.industry;
+    if (req.query.workType) query.work_type = { $in: [req.query.workType] };
+    if (req.query.industry) query.industry = { $in: [req.query.industry] };
     if (req.query.startup_id) query.startup_id = req.query.startup_id;
     if (req.query.founder_email) query.founder_email = req.query.founder_email;
 
@@ -414,9 +416,7 @@ app.patch(
   },
 );
 
-// ─────────────────────────────────────────────
 // ADMIN — STARTUPS
-// ─────────────────────────────────────────────
 
 app.get("/api/admin/startups", verifyToken, verifyAdmin, async (req, res) => {
   try {
@@ -465,9 +465,7 @@ app.delete(
   },
 );
 
-// ─────────────────────────────────────────────
 // APPLICATIONS
-// ─────────────────────────────────────────────
 
 app.get("/api/applications", verifyToken, async (req, res) => {
   try {
@@ -613,9 +611,7 @@ app.patch("/api/applications/:id", verifyToken, async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────
-// USER PROFILE UPDATE (collaborator/any user)
-// ─────────────────────────────────────────────
+// USER PROFILE UPDATE
 
 app.patch("/api/users/profile", verifyToken, async (req, res) => {
   try {
@@ -663,9 +659,7 @@ app.get("/api/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────
 // PAYMENTS
-// ─────────────────────────────────────────────
 
 app.get("/api/payments", verifyToken, verifyAdmin, async (req, res) => {
   try {
@@ -676,8 +670,6 @@ app.get("/api/payments", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-// Only our own Next.js server (payment success page) can call this —
-// it has already verified the Stripe session server-side before calling.
 app.post("/api/payments", verifyInternal, async (req, res) => {
   try {
     const { user_email, amount, transaction_id, payment_status, paid_at } =
@@ -706,7 +698,6 @@ app.post("/api/payments", verifyInternal, async (req, res) => {
   }
 });
 
-// Same internal-only protection — prevents self-upgrade fraud.
 app.patch("/api/users/plan", verifyInternal, async (req, res) => {
   try {
     const { email, plan } = req.body;
